@@ -51,19 +51,60 @@ function collectSlots(value: unknown, acc: string[], depth: number): void {
   }
 }
 
-function parseBooked(raw: string): string[] {
+/**
+ * Extracts the real opening window from the site response (`janela` field),
+ * falling back to the known default window when absent. This drives which
+ * times the agent lists as available, so it never invents slots.
+ */
+function janelaPadrao(): string[] {
+  const slots: string[] = [];
+  for (let h = 12; h <= 23; h++) {
+    slots.push(`${String(h).padStart(2, '0')}:00`);
+  }
+  return slots;
+}
+
+function parseBooked(raw: string): { ocupados: string[]; janela: string[] } {
+  const base = { ocupados: [] as string[], janela: janelaPadrao() };
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
     // Non-JSON: treat the raw text as a single opaque marker the model can read.
     const trimmed = raw.trim();
-    return trimmed ? [trimmed.slice(0, 2000)] : [];
+    return {
+      ocupados: trimmed ? [trimmed.slice(0, 2000)] : [],
+      janela: base.janela,
+    };
   }
+  if (typeof parsed !== 'object' || parsed === null) return base;
+
+  const record = parsed as Record<string, unknown>;
   const acc: string[] = [];
-  collectSlots(parsed, acc, 0);
-  // De-duplicate preserving order.
-  return Array.from(new Set(acc)).slice(0, 200);
+  collectSlots(record, acc, 0);
+
+  // Split booked markers ("YYYY-MM-DD|HH:MM" or "HH:MM") from the window list.
+  const ocupados = acc.filter((s) => s.includes('|') || /^\d{1,2}:\d{2}$/.test(s));
+  let janela = base.janela;
+  if (Array.isArray(record.janela)) {
+    const candidatos = (record.janela as unknown[])
+      .filter((v): v is string => typeof v === 'string')
+      .map((s) => s.trim())
+      .filter((s) => /^\d{1,2}:\d{2}$/.test(s));
+    if (candidatos.length > 0) janela = candidatos;
+  }
+
+  // Only keep window times that are NOT booked for the requested date.
+  const requestedDate = typeof record.data === 'string' ? record.data : null;
+  const ocupadosDoDia = requestedDate
+    ? ocupados
+        .filter((s) => s.includes('|') && s.startsWith(requestedDate))
+        .map((s) => s.split('|')[1])
+    : [];
+
+  const disponiveis = janela.filter((h) => !ocupadosDoDia.includes(h));
+
+  return { ocupados: Array.from(new Set(ocupados)).slice(0, 200), janela: disponiveis };
 }
 
 export function createConsultarHorariosTool(): ToolBase {
@@ -111,19 +152,23 @@ export function createConsultarHorariosTool(): ToolBase {
           };
         }
         const raw = await res.text();
-        const booked = parseBooked(raw.slice(0, MAX_BODY));
-        if (booked.length === 0) {
+        const { ocupados, janela } = parseBooked(raw.slice(0, MAX_BODY));
+        if (janela.length === 0) {
           return {
             ok: true,
             output:
-              'Nenhum horário marcado no momento. Todos os horários estão disponíveis.',
+              'Nenhum horário livre no momento. Todos os horários da janela estão ocupados.',
           };
         }
         return {
           ok: true,
           output:
-            'Horários já marcados (NÃO disponíveis):\n' +
-            booked.map((b) => `- ${b}`).join('\n'),
+            'Horários disponíveis hoje/na janela (lista REAL do sistema):\n' +
+            janela.map((h) => `- ${h}`).join('\n') +
+            (ocupados.length > 0
+              ? `\n\nHorários já marcados (NÃO disponíveis):\n` +
+                ocupados.map((b) => `- ${b}`).join('\n')
+              : ''),
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : 'network error';
