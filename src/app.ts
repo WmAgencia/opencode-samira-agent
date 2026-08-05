@@ -102,15 +102,27 @@ export function buildApp(): BuiltApp {
   // Emits Access-Control-Allow-* headers only for origins listed in
   // ALLOWED_ORIGINS (or "*" for local dev). Non-allowed cross-origin requests
   // are refused on OPTIONS preflight and get no CORS headers on real requests.
+  // Supports subdomain wildcards: an entry like "*.lovable.app" matches any
+  // origin whose host ends with ".lovable.app".
   const allowedOrigins = getAllowedOrigins();
   const allowsAny = allowedOrigins.includes('*');
+  const isOriginAllowed = (origin: string): boolean => {
+    if (allowsAny) return true;
+    if (allowedOrigins.includes(origin)) return true;
+    return allowedOrigins.some(
+      (entry) =>
+        entry.startsWith('*.') &&
+        origin.length > entry.length &&
+        origin.toLowerCase().endsWith(entry.slice(1).toLowerCase()),
+    );
+  };
   app.addHook('onRequest', async (req, reply) => {
     const origin = req.headers.origin;
     if (!origin || typeof origin !== 'string') {
       // Same-origin (test page, curl) or none -> CORS not needed.
       return;
     }
-    const allowed = allowsAny || allowedOrigins.includes(origin);
+    const allowed = isOriginAllowed(origin);
 
     if (req.method === 'OPTIONS') {
       // Preflight: short-circuit.

@@ -31,6 +31,10 @@ export type SiteAgentRequest = z.infer<typeof agentRequestSchemaSite>;
  * Request schema for the public site-facing endpoint POST /api/chat.
  * conversationId identifies a conversation; messages sharing the same id
  * belong to the same memory. Required so contexts never mix.
+ *
+ * `directives` (optional) carries the site's trained rules/guidelines. When
+ * present, the agent injects them into its system prompt so the model follows
+ * the site's directives on top of its base identity.
  */
 export const chatRequestSchema = z.object({
   conversationId: z
@@ -41,6 +45,10 @@ export const chatRequestSchema = z.object({
     .string()
     .min(1, 'message must be a non-empty string')
     .max(8000, 'message must be at most 8000 characters'),
+  directives: z
+    .string()
+    .max(8000, 'directives must be at most 8000 characters')
+    .optional(),
 });
 
 export type ChatRequest = z.infer<typeof chatRequestSchema>;

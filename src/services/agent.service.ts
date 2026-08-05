@@ -66,6 +66,8 @@ interface RunAgentLoopInput {
   conversationId?: string;
   source?: 'http' | 'whatsapp' | 'internal';
   history?: ChatMessage[];
+  /** Optional site-provided rules/guidelines injected into the system prompt. */
+  directives?: string;
 }
 
 export interface RunAgentLoopResult extends AgentResponse {
@@ -77,12 +79,20 @@ export interface RunAgentLoopResult extends AgentResponse {
 function buildSystemPrompt(opts: {
   useReactFallback: boolean;
   toolNames: string[];
+  directives?: string;
 }): string {
   const base = [
     'You are Samira, a focused autonomous agent.',
     'When you have enough information, answer concisely in plain text.',
     'Never reveal API keys, tokens, or secrets.',
   ];
+  if (opts.directives) {
+    base.push(
+      '=== SITE DIRECTIVES (always follow these rules) ===',
+      opts.directives,
+      '=== END OF SITE DIRECTIVES ===',
+    );
+  }
   if (opts.useReactFallback && opts.toolNames.length > 0) {
     base.push(
       'To call a tool, emit on its own line a tag like:',
@@ -186,7 +196,11 @@ export async function runAgentLoop(
   const messageLog: ChatMessage[] = [];
   messageLog.push({
     role: 'system',
-    content: buildSystemPrompt({ useReactFallback: false, toolNames }),
+    content: buildSystemPrompt({
+      useReactFallback: false,
+      toolNames,
+      directives: input.directives,
+    }),
   });
   if (input.history && input.history.length > 0) {
     messageLog.push(...input.history);
@@ -207,7 +221,11 @@ export async function runAgentLoop(
     // When fallback mode flips mid-loop, refresh the system prompt so the
     // model learns the ReAct convention. (Cheap; caps at AGENT_MAX_ITERATIONS.)
     if (useReactFallback && messageLog[0]?.role === 'system') {
-      messageLog[0].content = buildSystemPrompt({ useReactFallback: true, toolNames });
+      messageLog[0].content = buildSystemPrompt({
+        useReactFallback: true,
+        toolNames,
+        directives: input.directives,
+      });
     }
 
     const body: Record<string, unknown> = {

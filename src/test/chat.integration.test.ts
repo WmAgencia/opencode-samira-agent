@@ -11,7 +11,7 @@
  */
 process.env.AGENT_API_KEY = 'chat-test-key-123';
 process.env.ALLOWED_ORIGINS =
-  'http://localhost:1234,https://samirarevela.com.br';
+  'http://localhost:1234,https://samirarevela.com.br,*.lovable.app';
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -163,6 +163,42 @@ test('CORS: allowed origin gets header, denied origin is refused on preflight', 
     },
   });
   assert.equal(deniedPreflight.statusCode, 403);
+});
+
+// CORS subdomain wildcard (e.g. Lovable preview domains)
+test('CORS: subdomain wildcard origin (*.lovable.app) is allowed', async () => {
+  const res = await app.inject({
+    method: 'OPTIONS',
+    url: '/api/chat',
+    headers: {
+      Origin: 'https://app12345.lovable.app',
+      'Access-Control-Request-Method': 'POST',
+    },
+  });
+  assert.equal(res.statusCode, 204);
+  assert.equal(
+    statusCodeString(res.headers['access-control-allow-origin']),
+    'https://app12345.lovable.app',
+  );
+});
+
+// Directives: the site's rules must reach the model's system prompt.
+test('directives: /api/chat applies site rules to the system prompt', {
+  timeout: GLM_TIMEOUT,
+}, async () => {
+  const res = await app.inject({
+    method: 'POST',
+    url: '/api/chat',
+    headers: { 'Content-Type': 'application/json', ...AUTH },
+    payload: {
+      conversationId: 'teste-dir',
+      message: 'Ola, me diga OK.',
+      directives: 'Sempre finalize qualquer resposta com a palavra BANANA.',
+    },
+  });
+  assert.equal(res.statusCode, 200);
+  const b = res.json() as ChatResponse;
+  assert.match(b.response, /banana/i);
 });
 
 // Test page

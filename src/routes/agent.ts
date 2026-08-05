@@ -120,7 +120,7 @@ export function registerAgentRoutes(app: FastifyInstance): void {
         });
       }
 
-      const { message, conversationId } = parseResult.data;
+      const { message, conversationId, directives } = parseResult.data;
       const store = getConversationStore();
       // Same conversationId -> same persisted history. Different ids never
       // share context (enforced by the store + history fetch scoping).
@@ -132,6 +132,7 @@ export function registerAgentRoutes(app: FastifyInstance): void {
           conversationId,
           source: 'http',
           history,
+          directives,
         });
 
         await store.appendUser(conversationId, message);

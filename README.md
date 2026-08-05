@@ -41,9 +41,14 @@ Client -> HTTP API (Fastify) -> Samira Agent Service -> NVIDIA API -> GLM-5.2
 ```json
 {
   "conversationId": "samira-cliente-123",
-  "message": "Olá, meu nome é João."
+  "message": "Olá, meu nome é João.",
+  "directives": "Seja educada. Responda sempre em português e nunca prometa prazos."
 }
 ```
+
+- `directives` é **opcional** e carrega as regras/diretrizes treinadas no painel do
+  site. Quando enviado, o agente injeta esse texto no **system prompt** do modelo,
+  de modo que a Samira passa a seguir as regras do site por cima da identidade base.
 
 **Response (200):**
 
@@ -115,10 +120,11 @@ curl -X POST https://SEU-DOMINIO.up.railway.app/api/chat \
 
 Lista de origens (separadas por vírgula) que podem chamar a API pelo navegador.
 Sem esse valor, **nenhuma** origem externa é aceita (preflight → `403`). Use o
-literal `*` apenas em dev.
+literal `*` apenas em dev. Suporta curinga de subdomínio: `*.lovable.app` libera
+qualquer origem `*.lovable.app` (útil para previews do Lovable).
 
 ```bash
-ALLOWED_ORIGINS=https://samirarevela.com.br,https://www.samirarevela.com.br
+ALLOWED_ORIGINS=https://samirarevela.com.br,https://www.samirarevela.com.br,*.lovable.app
 ```
 
 ## Desenvolvimento local
