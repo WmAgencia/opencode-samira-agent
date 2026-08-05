@@ -188,6 +188,16 @@ const envSchema = z.object({
   // Used by notify_admin_group (requires Evolution API configured here).
   AGENT_ADMIN_GROUP_JID: z.string().optional(),
 
+  // Endpoint on the site that CREATES a booking (POST /api/public/booking).
+  // Used by criar_agendamento. When unset, the agent cannot create bookings
+  // and must never confirm a reservation to the client.
+  AGENT_BOOKING_API_URL: z
+    .string()
+    .optional()
+    .refine((v) => !v || /^https?:\/\//.test(v), {
+      message: 'AGENT_BOOKING_API_URL must start with http:// or https://',
+    }),
+
   // === Rate limiting (Etapa 2C) ===
   RATE_LIMIT_MAX: z
     .string()

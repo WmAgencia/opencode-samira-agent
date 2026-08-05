@@ -25,6 +25,36 @@ test('consultar_horarios is registered', async () => {
   assert.ok(reg.get('consultar_horarios'), 'consultar_horarios should be registered');
 });
 
+test('criar_agendamento is registered', async () => {
+  const { getDefaultRegistry } = await import('../tools/registry.js');
+  const reg = getDefaultRegistry();
+  assert.ok(reg.get('criar_agendamento'), 'criar_agendamento should be registered');
+});
+
+test('criar_agendamento returns tool_disabled when AGENT_BOOKING_API_URL is unset', async () => {
+  process.env.AGENT_BOOKING_API_URL = '';
+  const { createCriarAgendamentoTool } = await import('../tools/criar.agendamento.js');
+  const tool = createCriarAgendamentoTool();
+  const res = await tool.execute(
+    { nome: 'Ana', data: '2026-08-06', horario: '15:00' },
+    { conversationId: 't', source: 'internal', deadlineMs: Date.now() + 5000 },
+  );
+  assert.equal(res.ok, false);
+  assert.equal(res.error, 'tool_disabled');
+});
+
+test('criar_agendamento rejects missing required fields', async () => {
+  process.env.AGENT_BOOKING_API_URL = 'https://example.com/api/public/booking';
+  const { createCriarAgendamentoTool } = await import('../tools/criar.agendamento.js');
+  const tool = createCriarAgendamentoTool();
+  const res = await tool.execute(
+    { nome: '', data: '2026-08-06' },
+    { conversationId: 't', source: 'internal', deadlineMs: Date.now() + 5000 },
+  );
+  assert.equal(res.ok, false);
+  assert.equal(res.error, 'invalid_args');
+});
+
 test('consultar_horarios returns tool_disabled when AGENDA_API_URL is unset', async () => {
   process.env.AGENDA_API_URL = '';
   const { createConsultarHorariosTool } = await import('../tools/consultar.horarios.js');

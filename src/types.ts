@@ -47,7 +47,7 @@ export const chatRequestSchema = z.object({
     .max(8000, 'message must be at most 8000 characters'),
   directives: z
     .string()
-    .max(8000, 'directives must be at most 8000 characters')
+    .max(100_000, 'directives must be at most 100000 characters')
     .optional(),
 });
 
