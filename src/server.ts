@@ -1,9 +1,6 @@
-import Fastify from 'fastify';
-import { getEnv } from './config/env.js';
 import { getLogger } from './utils/logger.js';
-import { registerHealthRoutes } from './routes/health.js';
-import { registerStatusRoutes } from './routes/status.js';
-import { registerAgentRoutes } from './routes/agent.js';
+import { buildApp } from './app.js';
+import { getEnv } from './config/env.js';
 
 async function bootstrap(): Promise<void> {
   const log = getLogger();
@@ -18,45 +15,14 @@ async function bootstrap(): Promise<void> {
     process.exit(1);
   }
 
-  const app = Fastify({
-    logger: false, // we use our own pino instance to ensure redaction
-    trustProxy: true,
-    disableRequestLogging: false,
-  });
-
-  app.addHook('onRequest', async (req, _reply) => {
-    log.info(
-      { method: req.method, url: req.url },
-      'request: incoming',
-    );
-  });
-
-  app.setErrorHandler((err, req, reply) => {
-    const statusCode = err.statusCode && err.statusCode >= 400
-      ? err.statusCode
-      : 500;
-    log.error(
-      {
-        method: req.method,
-        url: req.url,
-        statusCode,
-        errMessage: err.message,
-      },
-      'request: error',
-    );
-    reply.status(statusCode).send({
-      error: statusCode >= 500 ? 'internal_error' : 'request_error',
-      message:
-        statusCode >= 500
-          ? 'Internal server error'
-          : err.message,
-      statusCode,
-    });
-  });
-
-  registerHealthRoutes(app);
-  registerStatusRoutes(app);
-  registerAgentRoutes(app);
+  let app;
+  try {
+    ({ app } = buildApp());
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'build error';
+    log.fatal({ errMessage: message }, 'server: failed to build app');
+    process.exit(1);
+  }
 
   try {
     await app.listen({ port: env.PORT, host: '0.0.0.0' });

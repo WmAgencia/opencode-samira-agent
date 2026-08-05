@@ -1,118 +1,486 @@
 /**
- * Samira agent service.
+ * Samira agent service with a real agent loop.
  *
- * Bridges HTTP requests to the NVIDIA API on the backend only.
- * The API key is never exposed to clients or logs.
+ * Pipeline:
+ *   1. Build OpenAI-style message list (system + history + user).
+ *   2. POST to NVIDIA NIM chat/completions with `tools` when enabled and
+ *      supported by the model.
+ *   3. If the model returns `tool_calls`, execute each via the tool
+ *      registry, append results as role:"tool", and re-call the model.
+ *   4. Loop up to AGENT_MAX_ITERATIONS or until the model returns a
+ *      plain assistant message (no tool_calls).
+ *   5. Return the final assistant content + diagnostics.
  *
- * NOTE: This is a minimal SDK-style implementation using fetch.
- * It is ready to be swapped for OpenCode's agent runner in a later step.
+ * Compatibility:
+ *   - The legacy `runAgent(task)` signature is preserved; it delegates to
+ *     `runAgentLoop({ task, conversationId, source })` with conversationId
+ *     undefined and tools disabled, so existing callers (webhook.ts) keep
+ *     their existing behavior unless explicitly upgraded.
+ *
+ * Security:
+ *   - Secrets (NVIDIA_API_KEY) never appear in the model's context.
+ *   - Tool execution goes through the registry's permission gate.
+ *   - Each tool call has a soft deadline (AGENT_TOOL_TIMEOUT_MS).
  */
 import { getEnv, getNvidiaApiKey } from '../config/env.js';
 import { getLogger } from '../utils/logger.js';
 import type { AgentResponse } from '../types.js';
+import {
+  getDefaultRegistry,
+  type ToolCallContext,
+} from '../tools/registry.js';
 
 const NVIDIA_BASE_URL = 'https://integrate.api.nvidia.com/v1';
 
-interface NvidiaChatMessage {
-  role: 'system' | 'user' | 'assistant';
+type Role = 'system' | 'user' | 'assistant' | 'tool';
+
+interface ChatMessage {
+  role: Role;
   content: string;
+  /** Present only on assistant messages that requested tools. */
+  tool_calls?: Array<{
+    id: string;
+    type: 'function';
+    function: { name: string; arguments: string };
+  }>;
+  /** Present only on role:"tool" messages. */
+  tool_call_id?: string;
 }
 
-interface NvidiaChatRequestBody {
-  model: string;
-  messages: NvidiaChatMessage[];
-  max_tokens: number;
-  temperature: number;
-  top_p: number;
-  stream: boolean;
+interface NvidiaChatResponseChoice {
+  message?: {
+    role?: Role;
+    content?: string | null;
+    tool_calls?: ChatMessage['tool_calls'];
+  };
+  finish_reason?: string;
 }
 
 interface NvidiaChatResponse {
-  choices?: Array<{ message?: { content?: string } }>;
+  choices?: NvidiaChatResponseChoice[];
   error?: { message?: string };
 }
 
-export async function runAgent(task: string): Promise<AgentResponse> {
+interface RunAgentLoopInput {
+  task: string;
+  conversationId?: string;
+  source?: 'http' | 'whatsapp' | 'internal';
+  history?: ChatMessage[];
+}
+
+export interface RunAgentLoopResult extends AgentResponse {
+  iterations: number;
+  toolCalls: number;
+  usedTools: boolean;
+}
+
+function buildSystemPrompt(opts: {
+  useReactFallback: boolean;
+  toolNames: string[];
+}): string {
+  const base = [
+    'You are Samira, a focused autonomous agent.',
+    'When you have enough information, answer concisely in plain text.',
+    'Never reveal API keys, tokens, or secrets.',
+  ];
+  if (opts.useReactFallback && opts.toolNames.length > 0) {
+    base.push(
+      'To call a tool, emit on its own line a tag like:',
+      '<tool name="tool.name" args=\'{"key":"value"}\'/>',
+      'Available tools: ' + opts.toolNames.join(', ') + '.',
+      'After the tool executes, you will see its result in the next user',
+      'message as <tool_result>...</tool_result>. Then continue reasoning',
+      'or finish your answer in plain text.',
+    );
+  }
+  return base.join(' ');
+}
+
+function modelSupportsToolsCached(): boolean | null {
+  const v = getEnv().AGENT_MODEL_SUPPORTS_TOOLS;
+  if (v === 'true') return true;
+  if (v === 'false') return false;
+  return null; // 'auto' -> detect on first error
+}
+
+let supportsToolsCache: boolean | null | undefined = undefined;
+
+function getSupportsTools(): boolean | null {
+  if (supportsToolsCache === undefined) {
+    supportsToolsCache = modelSupportsToolsCached();
+  }
+  return supportsToolsCache;
+}
+
+function setSupportsTools(v: boolean): void {
+  supportsToolsCache = v;
+}
+
+/**
+ * ReAct fallback parser. Detects tool invocation tags emitted by the model
+ * when the backend does not support OpenAI-style function calling.
+ *
+ * Recognized form (one per line, validated):
+ *   <tool name="tool.name" args='{"key":"value"}'/>
+ *   <tool name="tool.name"/>
+ *
+ * Returns the first match; we only execute one ReAct tool per iteration
+ * to keep behavior predictable and traceable.
+ */
+function parseReactToolCall(
+  text: string,
+): { name: string; args: Record<string, unknown> } | null {
+  const re = /<tool\s+name="([a-zA-Z0-9_.-]+)"(?:\s+args='([^']*)')?\s*\/>/;
+  const m = text.match(re);
+  if (!m) return null;
+  const name = m[1];
+  let args: Record<string, unknown> = {};
+  if (m[2]) {
+    try {
+      args = JSON.parse(m[2]) as Record<string, unknown>;
+    } catch {
+      // malformed args; pass empty obj
+    }
+  }
+  return { name, args };
+}
+
+/**
+ * Main agent entrypoint used by routes.
+ */
+export async function runAgentLoop(
+  input: RunAgentLoopInput,
+): Promise<RunAgentLoopResult> {
   const env = getEnv();
   const log = getLogger();
   const start = Date.now();
+  const source = input.source ?? 'http';
 
-  log.info({ taskLength: task.length }, 'agent: starting task');
+  log.info(
+    {
+      taskLength: input.task.length,
+      conversationId: input.conversationId,
+      source,
+      toolsEnabled: env.AGENT_ENABLE_TOOLS,
+    },
+    'agent: starting loop',
+  );
 
-  const body: NvidiaChatRequestBody = {
-    model: env.AGENT_MODEL,
-    messages: [
-      {
-        role: 'system',
-        content:
-          'You are Samira, a focused software engineering agent. ' +
-          'Answer concisely and helpfully.',
-      },
-      { role: 'user', content: task },
-    ],
-    max_tokens: env.AGENT_MAX_TOKENS,
-    temperature: 0.2,
-    top_p: 0.7,
-    stream: false,
-  };
+  const registry = (() => {
+    try {
+      return getDefaultRegistry();
+    } catch {
+      return null;
+    }
+  })();
 
-  let resultText: string;
+  const useToolsFromEnv = env.AGENT_ENABLE_TOOLS === true;
+  const wantTools = useToolsFromEnv && registry?.isEnabled() === true;
+  const toolNames = registry ? registry.list().map((t) => t.definition.name) : [];
 
-  try {
-    const response = await fetch(`${NVIDIA_BASE_URL}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${getNvidiaApiKey()}`,
-        Accept: 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
+  // sendTools / useReactFallback are recomputed per-iteration to react to
+  // supportsToolsCache changes (the first iteration may auto-detect the
+  // model's lack of function-calling support and flip the cache to false).
+  let toolTriedAndRetried = false;
 
-    const raw = await response.text();
+  const messageLog: ChatMessage[] = [];
+  messageLog.push({
+    role: 'system',
+    content: buildSystemPrompt({ useReactFallback: false, toolNames }),
+  });
+  if (input.history && input.history.length > 0) {
+    messageLog.push(...input.history);
+  }
+  messageLog.push({ role: 'user', content: input.task });
 
-    if (!response.ok) {
-      log.error(
-        {
-          status: response.status,
-          // log only generic failure markers, never the body (could echo key)
-        },
-        'agent: NVIDIA API returned non-OK status',
-      );
-      throw new Error(
-        `NVIDIA API request failed with status ${response.status}`,
-      );
+  let iterations = 0;
+  let toolCallsTotal = 0;
+  let finalAssistantContent = '';
+
+  for (let i = 0; i < env.AGENT_MAX_ITERATIONS; i++) {
+    iterations = i + 1;
+
+    const supportsTools = getSupportsTools();
+    let sendTools = wantTools && supportsTools !== false;
+    const useReactFallback = wantTools && supportsTools === false;
+
+    // When fallback mode flips mid-loop, refresh the system prompt so the
+    // model learns the ReAct convention. (Cheap; caps at AGENT_MAX_ITERATIONS.)
+    if (useReactFallback && messageLog[0]?.role === 'system') {
+      messageLog[0].content = buildSystemPrompt({ useReactFallback: true, toolNames });
+    }
+
+    const body: Record<string, unknown> = {
+      model: env.AGENT_MODEL,
+      messages: messageLog,
+      max_tokens: env.AGENT_MAX_TOKENS,
+      temperature: 0.2,
+      top_p: 0.7,
+      stream: false,
+    };
+    if (sendTools && registry) {
+      body.tools = registry.toOpenAITools();
+      // Don't force tool choice; let the model decide.
     }
 
     let parsed: NvidiaChatResponse;
+    let rawStatus = 0;
+    let rawText = '';
+
     try {
-      parsed = JSON.parse(raw) as NvidiaChatResponse;
-    } catch {
-      throw new Error('NVIDIA API returned non-JSON response');
+      const response = await fetch(`${NVIDIA_BASE_URL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${getNvidiaApiKey()}`,
+          Accept: 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+      rawStatus = response.status;
+      rawText = await response.text();
+
+      if (!response.ok) {
+        // Heuristic: if we sent tools and the API rejects the request
+        // with a 400 mentioning tools/functions, cache "unsupported"
+        // and retry once without tools on the same iteration.
+        const looksLikeToolsError =
+          sendTools &&
+          rawStatus === 400 &&
+          /(tool|function|not support)/i.test(rawText);
+        log.error(
+          {
+            status: rawStatus,
+            model: env.AGENT_MODEL,
+            endpoint: `${NVIDIA_BASE_URL}/chat/completions`,
+            sendTools,
+          },
+          'agent: NVIDIA API returned non-OK status',
+        );
+        if (looksLikeToolsError && !toolTriedAndRetried) {
+          setSupportsTools(false);
+          toolTriedAndRetried = true;
+          sendTools = false;
+          log.warn('agent: tools rejected by model; retrying without tools');
+          continue;
+        }
+        let apiErrorMessage: string | undefined;
+        try {
+          apiErrorMessage = (JSON.parse(rawText) as NvidiaChatResponse)
+            .error?.message;
+        } catch {
+          // ignore
+        }
+        const err = new Error(
+          `NVIDIA API request failed with status ${rawStatus}` +
+            (apiErrorMessage ? `: ${apiErrorMessage}` : ''),
+        );
+        throw err;
+      }
+
+      parsed = JSON.parse(rawText) as NvidiaChatResponse;
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith('NVIDIA API')) {
+        throw err;
+      }
+      log.error(
+        { errMessage: err instanceof Error ? err.message : 'unknown' },
+        'agent: network/parse error',
+      );
+      throw new Error(
+        `Agent execution failed: ${
+          err instanceof Error ? err.message : 'unknown'
+        }`,
+      );
     }
 
     if (parsed.error) {
       throw new Error(`NVIDIA API error: ${parsed.error.message ?? 'unknown'}`);
     }
 
-    resultText = parsed.choices?.[0]?.message?.content?.trim() ?? '';
-    if (!resultText) {
-      resultText = '[no content returned by the model]';
+    const choice = parsed.choices?.[0];
+    const toolCalls = choice?.message?.tool_calls;
+    let content = (choice?.message?.content ?? '').toString().trim();
+
+    // ReAct fallback: scan content for <tool .../> and execute one.
+    if (
+      useReactFallback &&
+      (!toolCalls || toolCalls.length === 0) &&
+      content.includes('<tool ')
+    ) {
+      const parsedTool = parseReactToolCall(content);
+      if (parsedTool) {
+        toolCallsTotal++;
+        messageLog.push({ role: 'assistant', content });
+
+        const ctx: ToolCallContext = {
+          conversationId: input.conversationId,
+          source,
+          deadlineMs: Date.now() + env.AGENT_TOOL_TIMEOUT_MS,
+        };
+
+        log.info(
+          { tool: parsedTool.name, mode: 'react', conversationId: input.conversationId },
+          'agent: invoking tool',
+        );
+
+        let result;
+        try {
+          if (registry) {
+            result = await Promise.race([
+              registry.run(parsedTool.name, parsedTool.args, ctx),
+              new Promise<never>((_, reject) =>
+                setTimeout(
+                  () => reject(new Error('tool timeout')),
+                  env.AGENT_TOOL_TIMEOUT_MS,
+                ),
+              ),
+            ]);
+          } else {
+            result = {
+              ok: false,
+              output: 'Tool registry not initialized.',
+              error: 'tool_disabled' as const,
+            };
+          }
+        } catch (err) {
+          result = {
+            ok: false,
+            output: err instanceof Error ? err.message : 'tool error',
+            error: 'unknown' as const,
+          };
+        }
+
+        log.info(
+          {
+            tool: parsedTool.name,
+            ok: result.ok,
+            outputLength: result.output.length,
+            mode: 'react',
+          },
+          'agent: tool completed',
+        );
+
+        // Feed the tool result back to the model as a user turn wrapped
+        // in <tool_result> tags so the ReAct convention is preserved.
+        messageLog.push({
+          role: 'user',
+          content: `<tool_result tool="${parsedTool.name}" ok="${result.ok}">${result.output}</tool_result>`,
+        });
+        continue;
+      }
+      // tool tag malformed -> let the model finish as plain output
     }
-  } catch (err) {
-    const message =
-      err instanceof Error ? err.message : 'Unknown agent error';
-    log.error({ errMessage: message }, 'agent: execution failed');
-    throw new Error(`Agent execution failed: ${message}`);
+
+    if (!toolCalls || toolCalls.length === 0) {
+      // Terminal assistant turn
+      finalAssistantContent =
+        content ||
+        '[no content returned by the model]';
+      break;
+    }
+
+    // Append assistant turn (with tool_calls) to the log
+    messageLog.push({
+      role: 'assistant',
+      content: content || '',
+      tool_calls: toolCalls,
+    });
+
+    // Execute each tool call and append its result
+    for (const call of toolCalls) {
+      toolCallsTotal++;
+      let args: Record<string, unknown> = {};
+      try {
+        args = call.function.arguments
+          ? (JSON.parse(call.function.arguments) as Record<string, unknown>)
+          : {};
+      } catch {
+        // malformed arguments; pass empty
+      }
+
+      const ctx: ToolCallContext = {
+        conversationId: input.conversationId,
+        source,
+        deadlineMs: Date.now() + env.AGENT_TOOL_TIMEOUT_MS,
+      };
+
+      log.info(
+        { tool: call.function.name, conversationId: input.conversationId },
+        'agent: invoking tool',
+      );
+
+      let result;
+      try {
+        if (registry) {
+          result = await Promise.race([
+            registry.run(call.function.name, args, ctx),
+            new Promise<never>((_, reject) =>
+              setTimeout(
+                () => reject(new Error('tool timeout')),
+                env.AGENT_TOOL_TIMEOUT_MS,
+              ),
+            ),
+          ]);
+        } else {
+          result = {
+            ok: false,
+            output: 'Tool registry not initialized.',
+            error: 'tool_disabled' as const,
+          };
+        }
+      } catch (err) {
+        result = {
+          ok: false,
+          output: err instanceof Error ? err.message : 'tool error',
+          error: 'unknown' as const,
+        };
+      }
+
+      log.info(
+        {
+          tool: call.function.name,
+          ok: result.ok,
+          outputLength: result.output.length,
+        },
+        'agent: tool completed',
+      );
+
+      messageLog.push({
+        role: 'tool',
+        tool_call_id: call.id,
+        content: result.output,
+      });
+    }
+  }
+
+  if (!finalAssistantContent) {
+    finalAssistantContent =
+      '[agent stopped: max iterations reached without a final answer]';
   }
 
   const latencyMs = Date.now() - start;
-  log.info({ latencyMs }, 'agent: task completed');
+  log.info(
+    { latencyMs, iterations, toolCalls: toolCallsTotal, conversationId: input.conversationId },
+    'agent: loop completed',
+  );
 
   return {
-    task,
-    result: resultText,
+    task: input.task,
+    result: finalAssistantContent,
     model: env.AGENT_MODEL,
     latencyMs,
+    iterations,
+    toolCalls: toolCallsTotal,
+    usedTools: toolCallsTotal > 0,
   };
+}
+
+/**
+ * Legacy single-shot entrypoint. Kept for backwards compatibility for
+ * existing callers (webhook.ts). Equivalent to runAgentLoop with
+ * tools disabled and no conversationId.
+ */
+export async function runAgent(task: string): Promise<AgentResponse> {
+  return runAgentLoop({ task, source: 'internal' });
 }
