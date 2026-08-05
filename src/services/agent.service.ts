@@ -146,6 +146,14 @@ function setSupportsTools(v: boolean): void {
  * Returns the first match; we only execute one ReAct tool per iteration
  * to keep behavior predictable and traceable.
  */
+/**
+ * Heuristic for "I'll check in a moment" answers that the model produces when
+ * it intends to run a tool but ends the turn without calling it. Matches the
+ * common Portuguese/English phrasings seen in this assistant's replies.
+ */
+const PROMISE_RE =
+  /\b(vou verificar|vou consultar|vou checar|vou ver|deixa eu verificar|deixe-me verificar|um momento|aguarde|já verifico|ja verifico|verificarei|vou dar uma olhada|let me check|i will check|one moment|checking now|give me a moment)\b/i;
+
 function parseReactToolCall(
   text: string,
 ): { name: string; args: Record<string, unknown> } | null {
@@ -404,6 +412,32 @@ export async function runAgentLoop(
       finalAssistantContent =
         content ||
         '[no content returned by the model]';
+
+      // Anti-promise guard: the model sometimes replies "vou verificar... um
+      // momento" without actually calling a tool, ending the turn before the
+      // real data is fetched. When that happens we do NOT accept the answer:
+      // we push an explicit instruction to call the tool right now and loop
+      // again, so availability/booking is resolved within this same request.
+      const looksLikePromise = PROMISE_RE.test(content);
+      const canUseTools = wantTools && registry?.isEnabled() === true;
+      if (looksLikePromise && canUseTools && i < env.AGENT_MAX_ITERATIONS - 1) {
+        log.warn(
+          { content: content.slice(0, 200) },
+          'agent: response promises to check without a tool call; forcing tool use',
+        );
+        messageLog.push({ role: 'assistant', content });
+        messageLog.push({
+          role: 'user',
+          content:
+            'You just said you would check/verify something but did not call any tool. ' +
+            'Do not reply in prose. Call the required tool NOW (consultar_horarios for ' +
+            'availability, criar_agendamento to book a slot) and wait for its result ' +
+            'before answering. If the tool returns ok:false or cannot run, say ' +
+            '"A Samira vai te atender assim que puder" and stop.',
+        });
+        continue;
+      }
+
       break;
     }
 
