@@ -241,3 +241,80 @@ function stripJidSuffix(jid: string): string {
   const at = jid.indexOf('@');
   return at > 0 ? jid.slice(0, at) : jid;
 }
+
+/**
+ * Sends a text message to a group chat via Evolution API.
+ * Unlike sendText, the full JID (e.g. "120363...@g.us") is used as the
+ * destination because group chats require the group JID, not a bare number.
+ */
+export async function sendGroupText(
+  to: string,
+  text: string,
+): Promise<SendTextResult> {
+  const log = getLogger();
+  if (!to || !text) {
+    return { ok: false, status: 0, error: 'to and text are required' };
+  }
+  if (isEvolutionMockMode()) {
+    log.info({ to: maskJid(to), textLength: text.length, mock: true }, 'evolution: sendGroupText (mock mode)');
+    return {
+      ok: true,
+      status: 200,
+      mock: true,
+      messageId: `mock-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+    };
+  }
+
+  const cfg = getEvolutionConfig();
+  const endpoint = `${cfg.apiUrl}/message/sendText/${encodeURIComponent(cfg.instance)}`;
+  const body = {
+    number: to,
+    options: { delay: 0, presence: 'composing' },
+    textMessage: { text },
+  };
+
+  const maxRetries = getEnv().EVOLUTION_SENDTEXT_MAX_RETRIES;
+  let lastError: string | undefined;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: cfg.apiKey },
+        body: JSON.stringify(body),
+      });
+      const raw = await response.text();
+      if (response.status >= 500 || response.status === 429) {
+        log.warn({ status: response.status, attempt, maxRetries, endpoint }, 'evolution: sendGroupText transient error');
+        if (attempt < maxRetries) {
+          const backoffMs = Math.min(8000, 500 * Math.pow(2, attempt - 1));
+          await sleep(backoffMs);
+          continue;
+        }
+        return { ok: false, status: response.status, error: `Evolution API returned status ${response.status}` };
+      }
+      if (!response.ok) {
+        return { ok: false, status: response.status, error: `Evolution API returned status ${response.status}` };
+      }
+      let parsed: { key?: { id?: string } } = {};
+      try {
+        parsed = JSON.parse(raw) as { key?: { id?: string } };
+      } catch {
+        // non-JSON but 2xx - still success
+      }
+      const messageId = parsed.key?.id;
+      log.info({ status: response.status, to: maskJid(to), messageId, attempt }, 'evolution: sendGroupText delivered');
+      return { ok: true, status: response.status, messageId };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown send error';
+      log.warn({ errMessage: message, attempt, maxRetries, endpoint }, 'evolution: sendGroupText network failure (retryable)');
+      lastError = message;
+      if (attempt < maxRetries) {
+        const backoffMs = Math.min(8000, 500 * Math.pow(2, attempt - 1));
+        await sleep(backoffMs);
+        continue;
+      }
+    }
+  }
+  return { ok: false, status: 0, error: lastError ?? 'sendGroupText failed' };
+}

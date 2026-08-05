@@ -171,6 +171,23 @@ const envSchema = z.object({
         .filter(Boolean),
     ),
 
+  // === Scheduling / availability (site agenda) ===
+
+  // Endpoint on the site that returns already-booked appointments so the agent
+  // can tell which times are still free. JSON: array of date/time strings,
+  // array of objects with start/date/time fields, or {appointments: [...]}.
+  // When unset, consultar_horarios reports it cannot determine availability.
+  AGENDA_API_URL: z
+    .string()
+    .optional()
+    .refine((v) => !v || /^https?:\/\//.test(v), {
+      message: 'AGENDA_API_URL must start with http:// or https://',
+    }),
+
+  // WhatsApp JID of the admin group notified when a client is left waiting.
+  // Used by notify_admin_group (requires Evolution API configured here).
+  AGENT_ADMIN_GROUP_JID: z.string().optional(),
+
   // === Rate limiting (Etapa 2C) ===
   RATE_LIMIT_MAX: z
     .string()

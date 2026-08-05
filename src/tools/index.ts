@@ -21,6 +21,8 @@ import {
 import { createFileReadTool } from './file.read.js';
 import { createFileWriteTool } from './file.write.js';
 import { createListDirTool } from './list.dir.js';
+import { createConsultarHorariosTool } from './consultar.horarios.js';
+import { createNotifyAdminGroupTool } from './notify.admin.js';
 import { getEnv } from '../config/env.js';
 
 let buildCalled = false;
@@ -59,11 +61,15 @@ export function buildDefaultRegistry(): ToolRegistry {
   const fileRead = createFileReadTool(allowedDir);
   const fileWrite = createFileWriteTool(allowedDir);
   const listDir = createListDirTool(allowedDir);
+  const consultarHorarios = createConsultarHorariosTool();
+  const notifyAdminGroup = createNotifyAdminGroupTool();
 
   const all = [
     { name: fileRead.definition.name, tool: fileRead },
     { name: fileWrite.definition.name, tool: fileWrite },
     { name: listDir.definition.name, tool: listDir },
+    { name: consultarHorarios.definition.name, tool: consultarHorarios },
+    { name: notifyAdminGroup.definition.name, tool: notifyAdminGroup },
   ];
 
   for (const { name, tool } of all) {
