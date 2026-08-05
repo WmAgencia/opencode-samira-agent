@@ -99,14 +99,38 @@ export function registerAgentRoutes(app: FastifyInstance): void {
     }
   });
 
+  // === Limpar histórico de uma conversa (reseta contexto poluído) ===
+  // Protected by AGENT_API_KEY. Accepts { conversationId } and returns
+  // { cleared: true } after removing the conversation + its turns.
+  app.post(
+    '/api/chat/clear',
+    { preHandler: [authenticateApiKey] },
+    async (req, reply) => {
+      const body = req.body as { conversationId?: unknown } | null;
+      const conversationId =
+        body && typeof body.conversationId === 'string' ? body.conversationId : null;
+      if (!conversationId) {
+        return reply.status(400).send({
+          error: 'validation_error',
+          message: 'conversationId is required',
+          statusCode: 400,
+        });
+      }
+      const store = getConversationStore();
+      const cleared = await store.clear(conversationId);
+      const log = getLogger();
+      log.info({ conversationId, cleared }, 'agent: conversation cleared');
+      return reply.status(200).send({ cleared, conversationId });
+    },
+  );
+
   // === Site-facing endpoint (Samira Revela) ===
   // Protected by AGENT_API_KEY. Requires { conversationId, message } and
   // returns the minimal { conversationId, response, model, latencyMs }.
   app.post(
     '/api/chat',
     { preHandler: [authenticateApiKey] },
-    async (req, reply) => {
-      const log = getLogger();
+    async (req, reply) => {      const log = getLogger();
       const parseResult = chatRequestSchema.safeParse(req.body);
       if (!parseResult.success) {
         const message = parseResult.error.issues

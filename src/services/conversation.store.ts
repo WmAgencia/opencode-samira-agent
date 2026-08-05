@@ -146,6 +146,22 @@ class ConversationStore {
   async init(): Promise<boolean> {
     return ensureSchema();
   }
+
+  /** Deletes a conversation and all its turns (DB + RAM). */
+  async clear(conversationId: string): Promise<boolean> {
+    this.map.delete(conversationId);
+    if (!isDbEnabled()) return true;
+    try {
+      const pool = getPool();
+      await pool.query(`DELETE FROM conversations WHERE id = $1`, [conversationId]);
+      return true;
+    } catch (err) {
+      const log = getLogger();
+      const message = err instanceof Error ? err.message : 'unknown';
+      log.warn({ errMessage: message, conversationId }, 'conversation: clear failed');
+      return false;
+    }
+  }
 }
 
 let singleton: ConversationStore | null = null;
