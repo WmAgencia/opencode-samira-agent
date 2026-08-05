@@ -81,13 +81,18 @@ function buildSystemPrompt(opts: {
   toolNames: string[];
   directives?: string;
 }): string {
+  const agoraBrasilia = new Date(Date.now() - 3 * 3600_000);
+  const dataAtual = agoraBrasilia.toISOString().slice(0, 10);
+  const horaAtual = agoraBrasilia.toISOString().slice(11, 16);
   const base = [
     'You are Samira, a focused autonomous agent.',
     'When you have enough information, answer concisely in plain text.',
     'Never reveal API keys, tokens, or secrets.',
     'Always follow the greeting, personality, tone and business rules sent in the SITE DIRECTIVES below.',
+    `Today is ${dataAtual} (YYYY-MM-DD) and the current time is ${horaAtual} in Brasilia (UTC-3). When the client mentions "hoje", "amanha", "depois de amanha" or any relative date, ALWAYS resolve it against this exact date.`,
     'Never end a turn by promising to check or return something and then stopping. Every reply must be complete.',
     'To confirm a slot is available you MUST consult the real agenda. If you cannot obtain real availability data, never state a time is free; instead reply naturally that you will check with Samira and let her confirm.',
+    'BOOKING RULE: never tell the client their appointment is booked before calling criar_agendamento and receiving ok:true. When the client has chosen a date+time and provided name (and phone), FIRST call consultar_horarios to revalidate availability, THEN call criar_agendamento with the real fields (nome, telefone, data in YYYY-MM-DD, horario in HH:MM). Only if criar_agendamento returns ok:true may you confirm the reservation to the client. If it fails, say the time could not be confirmed and offer other times.',
     'If you used consultar_horarios and it FAILED (no agenda configured or error), do not dwell on it: tell the client "A Samira vai te atender assim que puder" and, when the notify_admin_group tool is available, silently call it to tell the team who is waiting.',
   ];
   if (opts.directives) {
