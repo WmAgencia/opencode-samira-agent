@@ -7,6 +7,7 @@ process.env.AGENT_ALLOWED_PERMS = 'READ,NETWORK,WHATSAPP';
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { resetEnvCache } from '../config/env.js';
 
 before(async () => {
   const { buildApp } = await import('../app.js');
@@ -32,6 +33,7 @@ test('criar_agendamento is registered', async () => {
 });
 
 test('criar_agendamento returns tool_disabled when AGENT_BOOKING_API_URL is unset', async () => {
+  resetEnvCache();
   process.env.AGENT_BOOKING_API_URL = '';
   const { createCriarAgendamentoTool } = await import('../tools/criar.agendamento.js');
   const tool = createCriarAgendamentoTool();
@@ -44,6 +46,7 @@ test('criar_agendamento returns tool_disabled when AGENT_BOOKING_API_URL is unse
 });
 
 test('criar_agendamento rejects missing required fields', async () => {
+  resetEnvCache();
   process.env.AGENT_BOOKING_API_URL = 'https://example.com/api/public/booking';
   const { createCriarAgendamentoTool } = await import('../tools/criar.agendamento.js');
   const tool = createCriarAgendamentoTool();
@@ -56,6 +59,7 @@ test('criar_agendamento rejects missing required fields', async () => {
 });
 
 test('consultar_horarios returns tool_disabled when AGENDA_API_URL is unset', async () => {
+  resetEnvCache();
   process.env.AGENDA_API_URL = '';
   const { createConsultarHorariosTool } = await import('../tools/consultar.horarios.js');
   const tool = createConsultarHorariosTool();
@@ -81,6 +85,7 @@ test('notify_admin_group requires a message', async () => {
 });
 
 test('notify_admin_group returns tool_disabled when JID is unset', async () => {
+  resetEnvCache();
   process.env.AGENT_ADMIN_GROUP_JID = '';
   const { createNotifyAdminGroupTool } = await import('../tools/notify.admin.js');
   const tool = createNotifyAdminGroupTool();

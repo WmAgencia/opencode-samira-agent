@@ -40,7 +40,7 @@ const envSchema = z.object({
   AGENT_MODEL: z
     .string()
     .optional()
-    .default('z-ai/glm-5.2'),
+    .default('deepseek-ai/deepseek-v4-flash'),
 
   AGENT_MAX_TOKENS: z
     .string()
@@ -278,6 +278,14 @@ function loadEnv(): Env {
 }
 
 let cached: Env | null = null;
+
+/**
+ * Clears the cached environment. Production does not mutate process.env, so
+ * this is only used by tests that need to change env vars between cases.
+ */
+export function resetEnvCache(): void {
+  cached = null;
+}
 
 export function getEnv(): Env {
   if (!cached) {

@@ -65,7 +65,7 @@ test('B) GET /api/status reports NVIDIA key + model', async () => {
   };
   assert.equal(body.status, 'operational');
   assert.equal(body.nvidiaApiKeyConfigured, true);
-  assert.equal(body.model, 'z-ai/glm-5.2');
+  assert.equal(body.model, 'deepseek-ai/deepseek-v4-flash');
 });
 
 // C) Chat (new conversation) + auth enforcement
@@ -101,7 +101,7 @@ test('C) /api/chat enforces auth and answers a new conversation', {
   assert.equal(status, 200);
   const b = body as ChatResponse;
   assert.equal(b.conversationId, 'teste-001');
-  assert.equal(b.model, 'z-ai/glm-5.2');
+  assert.equal(b.model, 'deepseek-ai/deepseek-v4-flash');
   assert.equal(typeof b.latencyMs, 'number');
   assert.ok(b.response && b.response.trim().length > 0, 'response is empty');
 });
