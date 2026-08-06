@@ -1,7 +1,7 @@
 # opencode-samira-agent
 
 Serviço de IA/API independente para o projeto **Samira Revela**, alimentado pela
-API NVIDIA (modelo `deepseek-ai/deepseek-v4-flash`). Roda continuamente no Railway.
+API NVIDIA (modelo `z-ai/glm-5.2`). Roda continuamente no Railway.
 
 ## Arquitetura
 
@@ -12,14 +12,14 @@ SITE SAMIRA REVELA
 Open Code Samira Agent  (Fastify, este serviço)
      │  Agent Loop + contexto + memória persistente (PostgreSQL)
      ▼
-deepseek-v4-flash (NVIDIA)  →  resposta JSON  →  SITE SAMIRA REVELA
+glm-5.2 (NVIDIA)  →  resposta JSON  →  SITE SAMIRA REVELA
 ```
 
 - **Evolution API / WhatsApp = responsabilidade do site.**
 - **Este serviço = inteligência, contexto, memória e geração de respostas.**
 
 ```
-Client -> HTTP API (Fastify) -> Samira Agent Service -> NVIDIA API -> deepseek-v4-flash
+Client -> HTTP API (Fastify) -> Samira Agent Service -> NVIDIA API -> glm-5.2
 ```
 
 ## Endpoints
@@ -56,14 +56,14 @@ Client -> HTTP API (Fastify) -> Samira Agent Service -> NVIDIA API -> deepseek-v
 {
   "conversationId": "samira-cliente-123",
   "response": "Olá, João! Como posso ajudar?",
-  "model": "deepseek-ai/deepseek-v4-flash",
+  "model": "z-ai/glm-5.2",
   "latencyMs": 7421
 }
 ```
 
 - O `conversationId` identifica a conversa. Mensagens com o **mesmo** id
   compartilham o mesmo histórico; ids **diferentes** nunca misturam contexto.
-- O histórico é recuperado do PostgreSQL antes de chamar o deepseek-v4-flash e a resposta é
+- O histórico é recuperado do PostgreSQL antes de chamar o glm-5.2 e a resposta é
   persistida depois. Sem `DATABASE_URL`, o serviço cai para memória RAM
   (degradado; estado some no restart).
 - **Auth:** o header `Authorization: Bearer <AGENT_API_KEY>` é obrigatório.
@@ -88,7 +88,7 @@ loading/erros e permite nova conversa / limpar a tela.
 | `SERVICE_NAME`      | não         | -               | Nome exibido em `/api/status`                        |
 | `SERVICE_VERSION`   | não         | -               | Versão do serviço                                    |
 | `LOG_LEVEL`         | não         | `info`          | Nível do pino                                        |
-| `AGENT_MODEL`       | não         | `deepseek-ai/deepseek-v4-flash`  | Id do modelo NVIDIA                                  |
+| `AGENT_MODEL`       | não         | `z-ai/glm-5.2`  | Id do modelo NVIDIA                                  |
 | `AGENT_MAX_TOKENS`  | não         | `1024`          | Máx. de tokens da resposta                           |
 
 > Nunca envie `NVIDIA_API_KEY` nem `AGENT_API_KEY` para o frontend e nunca os
@@ -137,7 +137,7 @@ npm run dev
 
 ## Testes
 
-Os testes de integração chamam o deepseek-v4-flash real (sem mock) e exigem `NVIDIA_API_KEY`.
+Os testes de integração chamam o glm-5.2 real (sem mock) e exigem `NVIDIA_API_KEY`.
 
 ```bash
 npm run typecheck
@@ -168,7 +168,7 @@ npm start
 ## Integration with Evolution API (MVP)
 
 ```
-WhatsApp  ->  Evolution API  ->  POST /webhook/evolution  ->  runAgent() (deepseek-v4-flash)
+WhatsApp  ->  Evolution API  ->  POST /webhook/evolution  ->  runAgent() (glm-5.2)
                             ^                                v
                             +---- POST /message/sendText  <---+
 ```

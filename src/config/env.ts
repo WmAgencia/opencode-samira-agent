@@ -40,7 +40,7 @@ const envSchema = z.object({
   AGENT_MODEL: z
     .string()
     .optional()
-    .default('deepseek-ai/deepseek-v4-flash'),
+    .default('z-ai/glm-5.2'),
 
   AGENT_MAX_TOKENS: z
     .string()
