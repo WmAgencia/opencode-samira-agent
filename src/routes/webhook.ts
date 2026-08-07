@@ -35,6 +35,30 @@ import {
   turnsToHistory,
 } from '../services/conversation.store.js';
 
+function getAllowedInstances(): string[] {
+  try {
+    return getEnv().EVOLUTION_ALLOWED_INSTANCES;
+  } catch {
+    return [];
+  }
+}
+
+function getAllowedGroups(): string[] {
+  try {
+    return getEnv().EVOLUTION_ALLOWED_GROUPS;
+  } catch {
+    return [];
+  }
+}
+
+function isMentionOnly(): boolean {
+  try {
+    return getEnv().EVOLUTION_MENTION_ONLY;
+  } catch {
+    return false;
+  }
+}
+
 const IDEMPOTENCY_MAX_ENTRIES = 1000;
 const IDEMPOTENCY_TTL_MS = 10 * 60 * 1000;
 
@@ -174,6 +198,18 @@ export function registerWebhookRoutes(app: FastifyInstance): void {
       } satisfies WebhookAcknowledgement);
     }
 
+    // 3b. Instance allowlist (if configured)
+    const allowedInstances = getAllowedInstances();
+    if (allowedInstances.length > 0 && payload.instance) {
+      if (!allowedInstances.includes(payload.instance)) {
+        log.info({ instance: payload.instance }, 'webhook: instance not allowed');
+        return reply.status(200).send({
+          accepted: true,
+          reason: 'instance_not_allowed',
+        } satisfies WebhookAcknowledgement);
+      }
+    }
+
     // 4-6. Extract + anti-loop + idempotency (synchronous checks)
     const extracted = extractMessage(payload);
     if (!extracted) {
@@ -186,6 +222,30 @@ export function registerWebhookRoutes(app: FastifyInstance): void {
         accepted: true,
         reason,
       } satisfies WebhookAcknowledgement);
+    }
+
+    // 4b. Group allowlist (if configured)
+    const allowedGroups = getAllowedGroups();
+    if (allowedGroups.length > 0 && extracted.isGroup) {
+      if (!allowedGroups.includes(extracted.from)) {
+        log.info({ group: extracted.from }, 'webhook: group not allowed');
+        return reply.status(200).send({
+          accepted: true,
+          reason: 'group_not_allowed',
+        } satisfies WebhookAcknowledgement);
+      }
+    }
+
+    // 4c. Mention-only mode for groups
+    if (extracted.isGroup && isMentionOnly()) {
+      const mentioned = extracted.mentionedJids.length > 0;
+      if (!mentioned) {
+        log.info({ group: extracted.from }, 'webhook: mention required but not found');
+        return reply.status(200).send({
+          accepted: true,
+          reason: 'mention_required',
+        } satisfies WebhookAcknowledgement);
+      }
     }
 
     const messageKeyId = extracted.messageKeyId;
